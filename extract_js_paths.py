@@ -8,8 +8,33 @@ import os
 
 def get_js_links(url):
     """Fetches the URL and extracts all src attributes from script tags and inline script content."""
+    headers = {}
     try:
         response = requests.get(url, timeout=10, verify=False)
+        
+        if response.status_code in [401, 403]:
+            print(f"[-] Access denied: {response.status_code}")
+            try:
+                choice = input("[?] Do you want to add an Authorization header? (y/N): ").strip().lower()
+                if choice == 'y':
+                    print("[?] Select Auth Type:")
+                    print("    1. Basic")
+                    print("    2. Bearer")
+                    auth_choice = input("    Choice (default Bearer): ").strip().lower()
+                    
+                    auth_type = "Bearer"
+                    if 'basic' in auth_choice or auth_choice == '1':
+                        auth_type = "Basic"
+                    
+                    token = input(f"    Enter {auth_type} Token/Value: ").strip()
+                    headers['Authorization'] = f"{auth_type} {token}"
+                    
+                    print(f"[*] Retrying with {auth_type} Authorization...")
+                    response = requests.get(url, timeout=10, verify=False, headers=headers)
+            except KeyboardInterrupt:
+                print("\n[*] Auth prompt cancelled.")
+                return [], [], {}
+
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         
@@ -26,10 +51,10 @@ def get_js_links(url):
         if url.lower().endswith('.js'):
             js_links.append(url)
             
-        return list(set(js_links)), inline_scripts
+        return list(set(js_links)), inline_scripts, headers
     except requests.exceptions.RequestException as e:
         print(f"[-] Error fetching base URL {url}: {e}")
-        return [], []
+        return [], [], {}
 
 def is_garbage(s):
     """Check if the string is likely garbage/base64/obfuscated code or library schema."""
@@ -146,10 +171,10 @@ def extract_endpoints(content):
         
     return list(set(cleaned))
 
-def scan_js_file(js_url):
+def scan_js_file(js_url, headers=None):
     """Fetches a JS file and searches for paths inside strings."""
     try:
-        response = requests.get(js_url, timeout=10, verify=False)
+        response = requests.get(js_url, timeout=10, verify=False, headers=headers)
         response.raise_for_status()
         content = response.text
         return extract_endpoints(content)
@@ -157,7 +182,7 @@ def scan_js_file(js_url):
         print(f"[-] Error fetching JS {js_url}: {e}")
         return []
 
-def download_js_files(js_urls, flatten=False):
+def download_js_files(js_urls, headers=None, flatten=False):
     """Downloads the list of JS files, optionally preserving directory structure."""
     print(f"\n[*] Preparing to download {len(js_urls)} files...")
     
@@ -196,7 +221,7 @@ def download_js_files(js_urls, flatten=False):
                 os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
             print(f"  -> Downloading: {url} -> {local_path} ...", end=" ")
-            response = requests.get(url, timeout=10, verify=False)
+            response = requests.get(url, timeout=10, verify=False, headers=headers)
             response.raise_for_status()
             with open(local_path, 'wb') as f:
                 f.write(response.content)
@@ -213,7 +238,7 @@ def main():
     print(f"[*] Scanning target: {target_url}")
     
     requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
-    js_urls, inline_scripts = get_js_links(target_url)
+    js_urls, inline_scripts, auth_headers = get_js_links(target_url)
     
     if not js_urls and not inline_scripts:
         print("[-] No JavaScript found.")
@@ -224,7 +249,7 @@ def main():
     all_found = {}
     for js_url in js_urls:
         print(f"  -> Checking: {js_url}")
-        found_paths = scan_js_file(js_url)
+        found_paths = scan_js_file(js_url, headers=auth_headers)
         if found_paths:
             all_found[js_url] = found_paths
 
@@ -260,7 +285,7 @@ def main():
                 urls_to_download = js_urls
                 if exclude_choice == 'y':
                     urls_to_download = [u for u in js_urls if not any(k in u.lower() for k in deny_list)]
-                download_js_files(urls_to_download, flatten=flatten)
+                download_js_files(urls_to_download, headers=auth_headers, flatten=flatten)
         except KeyboardInterrupt:
             print("\n[*] Operation cancelled.")
 
